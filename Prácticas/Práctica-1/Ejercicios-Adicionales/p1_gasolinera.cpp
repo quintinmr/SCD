@@ -19,28 +19,26 @@ const unsigned int num_hebras          = 10,     //número de hebras total
 
 unsigned int       num_surt_en_uso     = 0;      //número de surtidores en uso
 
-enum tipo {DIESEL, GASOLINA};
-
 Semaphore surtidor_diesel_libre(num_surt_diesel),       //semáforo que controla el núm. de surtidores de diesel libres
           surtidor_gasolina_libre(num_surt_gasolina),   //semáforo que controla el núm. de surtidores de gasolina libres
           exclusion_mutua(1);                           //semáforo que controla el acceso a la variable compartida num_surt_en_uso
 
 //----------------------------------------------------------------------
 // Función repostar(), común a todas las hebras
-void repostar(int coche, tipo tipo)
+void repostar(unsigned int coche, string tipo)
 {
 
    // calcular milisegundos aleatorios de duración de la acción de repostar)
-   chrono::milliseconds duracion_repo( aleatorio<10,100>() );
+   chrono::milliseconds duracion_repo( aleatorio<50,100>() );
 
    // informa de que comienza a repostar
-   cout << "Comienza a repostar coche número " << coche <<  (tipo == tipo::DIESEL ? " gasoil: ": " gasolina: ") << duracion_repo.count() << " milisegundos" << endl;
+   cout << "Comienza a repostar coche número " << coche << " tipo " << tipo << endl;
 
    // espera bloqueada un tiempo igual a ''duracion_repo' milisegundos
    this_thread::sleep_for( duracion_repo );
 
    // informa de que ha terminado de repostar
-   cout << "Termina de repostar coche número " << coche <<  (tipo == tipo::DIESEL ? " gasoil. ": " gasolina.")<< endl;
+   cout << "Termina de repostar coche número " << coche << " tipo " << tipo << endl;
    
 }
 //----------------------------------------------------------------------
@@ -57,7 +55,11 @@ void funcion_hebra_gasoil(unsigned int num_hebra)
             num_surt_en_uso++;
             //{ imprimir el número de surtidores en uso }
             cout << "Número de surtidores en uso: " << num_surt_en_uso << endl;
-            repostar(num_hebra, tipo::DIESEL);
+            sem_signal(exclusion_mutua);
+            
+            repostar(num_hebra, "gasoil");
+            
+            sem_wait(exclusion_mutua);
             //{ decrementar el número de surtidores en uso }
             num_surt_en_uso--;
             //{ imprimir el número de surtidores en uso }
@@ -67,7 +69,7 @@ void funcion_hebra_gasoil(unsigned int num_hebra)
         sem_signal(surtidor_diesel_libre);
 
         //{ retraso de duración aleatoria (fuera de gasolinera) }
-        chrono::milliseconds duracion_fuera( aleatorio<10,100>() );
+        chrono::milliseconds duracion_fuera( aleatorio<50,100>() );
         this_thread::sleep_for( duracion_fuera );
 
 
@@ -84,12 +86,15 @@ void funcion_hebra_gasolina(unsigned int num_hebra)
         //{ esperar hasta que haya un surtidor adecuado libre }
         sem_wait(surtidor_gasolina_libre);
             sem_wait(exclusion_mutua);
-
             //{ incrementar el número de surtidores en uso }
             num_surt_en_uso++;
             //{ imprimir el número de surtidores en uso }
             cout << "Número de surtidores en uso: " << num_surt_en_uso << endl;
-            repostar(num_hebra, tipo::GASOLINA);
+            sem_signal(exclusion_mutua);
+            
+            repostar(num_hebra, "gasolina");
+            
+            sem_wait(exclusion_mutua);
             //{ decrementar el número de surtidores en uso }
             num_surt_en_uso--;
             //{ imprimir el número de surtidores en uso }
@@ -99,9 +104,8 @@ void funcion_hebra_gasolina(unsigned int num_hebra)
         sem_signal(surtidor_gasolina_libre);
 
         //{ retraso de duración aleatoria (fuera de gasolinera) }
-        chrono::milliseconds duracion_fuera( aleatorio<10,100>() );
+        chrono::milliseconds duracion_fuera( aleatorio<50,100>() );
         this_thread::sleep_for( duracion_fuera );
-
 
     }
 
