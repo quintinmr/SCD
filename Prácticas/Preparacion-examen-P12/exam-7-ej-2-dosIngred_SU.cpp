@@ -1,8 +1,3 @@
-/*
-   -Nombre: Quintín
-   -Apellidos: Mesa Romero
-   -DNI: 78006011Q
-*/
 #include <iostream>
 #include <cassert>
 #include <thread>
@@ -17,29 +12,38 @@ using namespace scd ;
 // numero de fumadores 
 
 const int num_fumadores = 3 ;
-mutex mutex;
+mutex mtx;
 
 //-------------------------------------------------------------------------
 // Función que simula la acción de producir un ingrediente, como un retardo
 // aleatorio de la hebra (devuelve número de ingrediente producido)
 
-int producir_ingrediente()
+vector<int> producir_ingredientes()
 {
    // calcular milisegundos aleatorios de duración de la acción de fumar)
    chrono::milliseconds duracion_produ( aleatorio<10,100>() );
 
    // informa de que comienza a producir
-   cout << "Estanquero : empieza a producir ingrediente (" << duracion_produ.count() << " milisegundos)" << endl;
+   cout << "Estanquero : empieza a producir ingredientes (" << duracion_produ.count() << " milisegundos)" << endl;
 
    // espera bloqueada un tiempo igual a ''duracion_produ' milisegundos
    this_thread::sleep_for( duracion_produ );
 
-   const int num_ingrediente = aleatorio<0,num_fumadores-1>() ;
+   int a = 0, b = 0;
+   vector<int> ingreds;
+   while (a == b)
+   {
+        a = aleatorio<0,num_fumadores-1>();
+        b = aleatorio<0,num_fumadores-1>();
+   }
+   
+   ingreds.push_back(a);
+   ingreds.push_back(b);
 
    // informa de que ha terminado de producir
-   cout << "Estanquero : termina de producir ingrediente " << num_ingrediente << endl;
+   cout << "Estanquero : termina de producir ingredientes " << ingreds[0] << " y " << ingreds[1] << endl;
 
-   return num_ingrediente ;
+   return ingreds ;
 }
 
 //----------------------------------------------------------------------
@@ -54,18 +58,18 @@ class Estanco : public HoareMonitor
    private:
 
       // Declaramos variables permanentes
-      int num_ingrediente;		     // (-1 cuando no hay ingrediente en el mostrador, 0,1,2 en caso contrario)
+      int ingred_a, ingred_b;        // (-1 cuando no hay ingrediente en el mostrador, 0,1,2 en caso contrario)
 
-      CondVar                                // colas condición
-         mostrador,  			     // cola en la que espera el estanquero a que el mostrador se vacíe.                         
-         ingr_disp[num_fumadores];	     // colas en las que cada fumador espera a que su ingrediente esté disponible en el mostrador.
-
+      CondVar                        // colas condición
+         mostrador,                  // cola en la que espera el estanquero a que el fumador i recoja su ingrediente del mostrador                        
+         ingr_disp[num_fumadores];	 // colas en las que cada fumador espera a que su ingrediente esté disponible en el mostrador.
+        
       // Procedimientos
       public:
 
          Estanco();
-         void ponerIngrediente(unsigned i);
-         void esperarRecogidaIncrediente();
+         void ponerIngrediente(vector<int> ingreds);
+         void esperarRecogidaIngrediente();
          void obtenerIngrediente(unsigned i);
 
 };
@@ -82,10 +86,16 @@ class Estanco : public HoareMonitor
 
 Estanco::Estanco()
 {
-   num_ingrediente = -1;
-   mostrador       = newCondVar();
+   
+   ingred_a = -1;
+   ingred_b = -1;
+
+   mostrador = newCondVar();
+
    for (unsigned i = 0; i < num_fumadores; i++)
+   {
       ingr_disp[i] = newCondVar();
+   }
 
 }
 
@@ -98,41 +108,42 @@ void Estanco::obtenerIngrediente(unsigned i)
    assert( i < num_fumadores);
    
    // Si el ingrediente no es del fumador, espera
-   if (num_ingrediente != i) ingr_disp[i].wait();
+   if (i != ingred_a && i != ingred_b) ingr_disp[i].wait();
 
    cout << "Se ha retirado del mostrador el ingrediente nº: "<< i << endl;
    // Lo retira del mostrador
-   num_ingrediente = -1;
-   mostrador.signal();
+   if (i == ingred_a) ingred_a = -1;
+   else if (i == ingred_b) ingred_b = -1;
 
+   if (ingred_a == -1 && ingred_b == -1)
+      mostrador.signal();
+   
 }
 
 //----------------------------------------------------------------------
 // Poner ingrediente en el mostrador
 //----------------------------------------------------------------------
 
-void Estanco::ponerIngrediente(unsigned i)
+void Estanco::ponerIngrediente(vector<int> ingreds)
 {
    
-   // El número de ingrediete pasa a ser i
-   num_ingrediente = i;
-   cout << "Ingediente nº "<< i << " puesto en el mostrador." << endl;
-   ingr_disp[i].signal();
+   //assert(ingreds.size() == 2);
+
+   ingred_a = ingreds[0];
+   ingred_b = ingreds[1];
+
+
+   cout << "Ingedientes nº "<< ingred_a << " y " << ingred_b << " puestos en el mostrador." << endl;
+   ingr_disp[ingred_a].signal();
+   ingr_disp[ingred_b].signal();
+
    
 }
 
-//----------------------------------------------------------------------
-// Esperar recogida del ingrediente
-//----------------------------------------------------------------------
-
-void Estanco::esperarRecogidaIncrediente()
+void Estanco::esperarRecogidaIngrediente()
 {
-   
-   // Si hay un ingrediente encima del mostrador, el estanquero espera a que se recoja
-   if(num_ingrediente != -1){
-      cout << "Estanquero espera a que se recoja el ingrediente " << num_ingrediente << endl;
+   if (ingred_a != -1 || ingred_b != -1 )
       mostrador.wait();
-   }
    
 }
 
@@ -143,9 +154,9 @@ void funcion_hebra_estanquero( MRef<Estanco> monitor )
 {
    while (true)
    {
-      unsigned i = producir_ingrediente();
-      monitor->ponerIngrediente(i);
-      monitor->esperarRecogidaIncrediente();
+      vector<int> ingredientes = producir_ingredientes();
+      monitor->ponerIngrediente(ingredientes);
+      monitor->esperarRecogidaIngrediente();
    }
 }
 
@@ -159,17 +170,17 @@ void fumar( int num_fumador )
    chrono::milliseconds duracion_fumar( aleatorio<20,200>() );
 
    // informa de que comienza a fumar
-
+    mtx.lock();
     cout << "Fumador " << num_fumador << "  :"
           << " empieza a fumar (" << duracion_fumar.count() << " milisegundos)" << endl;
-
+    mtx.unlock();
    // espera bloqueada un tiempo igual a ''duracion_fumar' milisegundos
    this_thread::sleep_for( duracion_fumar );
 
    // informa de que ha terminado de fumar
-
+    mtx.lock();
     cout << "Fumador " << num_fumador << "  : termina de fumar, comienza espera de ingrediente." << endl;
-
+    mtx.unlock();
 }
 
 //----------------------------------------------------------------------

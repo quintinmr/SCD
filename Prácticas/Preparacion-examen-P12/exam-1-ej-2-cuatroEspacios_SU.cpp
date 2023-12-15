@@ -1,8 +1,3 @@
-/*
-   -Nombre: Quintín
-   -Apellidos: Mesa Romero
-   -DNI: 78006011Q
-*/
 #include <iostream>
 #include <cassert>
 #include <thread>
@@ -16,8 +11,10 @@ using namespace scd ;
 
 // numero de fumadores 
 
-const int num_fumadores = 3 ;
-mutex mutex;
+const int num_fumadores   = 3 ,
+          num_estanqueros = 4;
+
+Semaphore mtx(1);
 
 //-------------------------------------------------------------------------
 // Función que simula la acción de producir un ingrediente, como un retardo
@@ -29,15 +26,18 @@ int producir_ingrediente()
    chrono::milliseconds duracion_produ( aleatorio<10,100>() );
 
    // informa de que comienza a producir
-   cout << "Estanquero : empieza a producir ingrediente (" << duracion_produ.count() << " milisegundos)" << endl;
-
+   sem_wait(mtx);
+   cout << "Estanquero empieza a producir ingrediente (" << duracion_produ.count() << " milisegundos)" << endl;
+   sem_signal(mtx);
    // espera bloqueada un tiempo igual a ''duracion_produ' milisegundos
    this_thread::sleep_for( duracion_produ );
 
    const int num_ingrediente = aleatorio<0,num_fumadores-1>() ;
 
    // informa de que ha terminado de producir
-   cout << "Estanquero : termina de producir ingrediente " << num_ingrediente << endl;
+   sem_wait(mtx);
+   cout << "Estanquero termina de producir ingrediente " << num_ingrediente << endl;
+   sem_signal(mtx);
 
    return num_ingrediente ;
 }
@@ -54,18 +54,17 @@ class Estanco : public HoareMonitor
    private:
 
       // Declaramos variables permanentes
-      int num_ingrediente;		     // (-1 cuando no hay ingrediente en el mostrador, 0,1,2 en caso contrario)
-
-      CondVar                                // colas condición
-         mostrador,  			     // cola en la que espera el estanquero a que el mostrador se vacíe.                         
+      unsigned contador[num_fumadores];  // contador para el núm. de items por ingrediente que hay en el mostrador.
+      CondVar                            // colas condición
+         mostrador[num_fumadores],  	  // cola en la que esperan los estanquero a que el espacio de mostrador que quieren se vacíe.                         
          ingr_disp[num_fumadores];	     // colas en las que cada fumador espera a que su ingrediente esté disponible en el mostrador.
 
       // Procedimientos
       public:
 
          Estanco();
-         void ponerIngrediente(unsigned i);
-         void esperarRecogidaIncrediente();
+         void ponerIngrediente(unsigned i, unsigned j);
+        // void esperarRecogidaIncrediente();
          void obtenerIngrediente(unsigned i);
 
 };
@@ -82,10 +81,12 @@ class Estanco : public HoareMonitor
 
 Estanco::Estanco()
 {
-   num_ingrediente = -1;
-   mostrador       = newCondVar();
-   for (unsigned i = 0; i < num_fumadores; i++)
+   
+   for (unsigned i = 0; i < num_fumadores; i++){
       ingr_disp[i] = newCondVar();
+      mostrador[i] = newCondVar();
+      contador[i]  = 0;
+   }
 
 }
 
@@ -97,13 +98,11 @@ void Estanco::obtenerIngrediente(unsigned i)
 {
    assert( i < num_fumadores);
    
-   // Si el ingrediente no es del fumador, espera
-   if (num_ingrediente != i) ingr_disp[i].wait();
+   if (contador[i] == 0) ingr_disp[i].wait();
 
+   contador[i]--;
    cout << "Se ha retirado del mostrador el ingrediente nº: "<< i << endl;
-   // Lo retira del mostrador
-   num_ingrediente = -1;
-   mostrador.signal();
+   mostrador[i].signal();
 
 }
 
@@ -111,41 +110,26 @@ void Estanco::obtenerIngrediente(unsigned i)
 // Poner ingrediente en el mostrador
 //----------------------------------------------------------------------
 
-void Estanco::ponerIngrediente(unsigned i)
+void Estanco::ponerIngrediente(unsigned i, unsigned j)
 {
    
-   // El número de ingrediete pasa a ser i
-   num_ingrediente = i;
-   cout << "Ingediente nº "<< i << " puesto en el mostrador." << endl;
+   if (contador[i] == 4)
+      mostrador[i].wait();
+   contador[i]++;
+   cout << "Estanquero " << j << " ha puesto ingediente nº "<< i << " en el mostrador." << endl;
    ingr_disp[i].signal();
-   
-}
-
-//----------------------------------------------------------------------
-// Esperar recogida del ingrediente
-//----------------------------------------------------------------------
-
-void Estanco::esperarRecogidaIncrediente()
-{
-   
-   // Si hay un ingrediente encima del mostrador, el estanquero espera a que se recoja
-   if(num_ingrediente != -1){
-      cout << "Estanquero espera a que se recoja el ingrediente " << num_ingrediente << endl;
-      mostrador.wait();
-   }
    
 }
 
 //----------------------------------------------------------------------
 // función que ejecuta la hebra del estanquero
 
-void funcion_hebra_estanquero( MRef<Estanco> monitor )
+void funcion_hebra_estanquero( MRef<Estanco> monitor, unsigned num_estanquero )
 {
    while (true)
    {
       unsigned i = producir_ingrediente();
-      monitor->ponerIngrediente(i);
-      monitor->esperarRecogidaIncrediente();
+      monitor->ponerIngrediente(i,num_estanquero);
    }
 }
 
@@ -159,17 +143,18 @@ void fumar( int num_fumador )
    chrono::milliseconds duracion_fumar( aleatorio<20,200>() );
 
    // informa de que comienza a fumar
-
+    sem_wait(mtx);
     cout << "Fumador " << num_fumador << "  :"
           << " empieza a fumar (" << duracion_fumar.count() << " milisegundos)" << endl;
+    sem_signal(mtx);
 
    // espera bloqueada un tiempo igual a ''duracion_fumar' milisegundos
    this_thread::sleep_for( duracion_fumar );
 
    // informa de que ha terminado de fumar
-
+    sem_wait(mtx);
     cout << "Fumador " << num_fumador << "  : termina de fumar, comienza espera de ingrediente." << endl;
-
+    sem_signal(mtx);
 }
 
 //----------------------------------------------------------------------
@@ -200,14 +185,19 @@ int main()
    // declarar hebras y ponerlas en marcha
    
    thread hebras_fumadoras[num_fumadores];
-   thread hebra_estanquero(funcion_hebra_estanquero, monitor);
+   thread hebras_estanqueros[num_estanqueros];
    
    for (int k = 0; k < num_fumadores; k++)
    	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor, k);
+
+   for (int k = 0; k < num_estanqueros; k++)
+   	hebras_estanqueros[k] = thread (funcion_hebra_estanquero,monitor, k);
    	
-   hebra_estanquero.join();
    
    for (int k = 0; k < num_fumadores; k++)
    	hebras_fumadoras[k].join();
+
+   for (int k = 0; k < num_estanqueros; k++)
+   	hebras_estanqueros[k].join();
    
 }

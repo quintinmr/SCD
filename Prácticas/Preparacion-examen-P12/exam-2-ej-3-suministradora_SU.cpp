@@ -1,8 +1,3 @@
-/*
-   -Nombre: Quintín
-   -Apellidos: Mesa Romero
-   -DNI: 78006011Q
-*/
 #include <iostream>
 #include <cassert>
 #include <thread>
@@ -17,7 +12,8 @@ using namespace scd ;
 // numero de fumadores 
 
 const int num_fumadores = 3 ;
-mutex mutex;
+
+Semaphore exclusion_mutua(1);
 
 //-------------------------------------------------------------------------
 // Función que simula la acción de producir un ingrediente, como un retardo
@@ -29,7 +25,9 @@ int producir_ingrediente()
    chrono::milliseconds duracion_produ( aleatorio<10,100>() );
 
    // informa de que comienza a producir
+   sem_wait(exclusion_mutua);
    cout << "Estanquero : empieza a producir ingrediente (" << duracion_produ.count() << " milisegundos)" << endl;
+   sem_signal(exclusion_mutua);
 
    // espera bloqueada un tiempo igual a ''duracion_produ' milisegundos
    this_thread::sleep_for( duracion_produ );
@@ -37,9 +35,93 @@ int producir_ingrediente()
    const int num_ingrediente = aleatorio<0,num_fumadores-1>() ;
 
    // informa de que ha terminado de producir
+   sem_wait(exclusion_mutua);
    cout << "Estanquero : termina de producir ingrediente " << num_ingrediente << endl;
+   sem_signal(exclusion_mutua);
 
    return num_ingrediente ;
+}
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Monitor Buffer
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+class Buffer : public HoareMonitor
+{
+    private:
+
+        // Declaramos variables permanentes
+        static const unsigned num_celdas_total = 5;  //número de celdas del buffer
+        
+        unsigned buffer[num_celdas_total],           //buffer donde la suministradora irá
+                                                     //almacenando ingredientes
+                 primera_libre,                      //índice de celdas libres
+                 primera_ocupada,                    //índice de celdas ocupadas
+                 num_ocupadas;                       //número de celdas ocupadas
+
+        CondVar
+            buff_libres,                             // cola donde espera la suministradora
+            buff_ocupadas;                           // cola donde espera el estanquero
+
+    public:
+
+        Buffer();
+        unsigned leer ();                           //el estanquero lee el valor del buffer
+        void escribir(unsigned valor);              //la suministradora escribe el ingr. en el buffer
+
+};
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Implementación procedimientos del monitor
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// Constructor
+//----------------------------------------------------------------------
+Buffer::Buffer()
+{
+    primera_libre   = 0;
+    primera_ocupada = 0;
+    num_ocupadas    = 0;
+    buff_libres     = newCondVar();
+    buff_ocupadas   = newCondVar();
+}
+
+//----------------------------------------------------------------------
+// Escribir en el buffer el ingrediente correspondiente
+//----------------------------------------------------------------------
+void Buffer::escribir(unsigned valor)
+{
+    if (num_ocupadas == num_celdas_total)
+        buff_libres.wait();
+
+    assert(0<=valor<=2);
+
+    buffer[primera_libre] = valor;
+    primera_libre = (primera_libre+1) % num_celdas_total;
+    num_ocupadas++;
+
+    buff_ocupadas.signal();
+}
+
+//----------------------------------------------------------------------
+// Leer del buffer el ingrediente correspondiente
+//----------------------------------------------------------------------
+unsigned Buffer::leer()
+{
+    if (num_ocupadas == 0)
+        buff_ocupadas.wait();
+
+    unsigned valor = buffer[primera_ocupada];
+    primera_ocupada = (primera_ocupada+1) % num_celdas_total;
+    num_ocupadas--;
+    
+    buff_libres.signal();
+
+    return valor;
 }
 
 //----------------------------------------------------------------------
@@ -137,15 +219,27 @@ void Estanco::esperarRecogidaIncrediente()
 }
 
 //----------------------------------------------------------------------
-// función que ejecuta la hebra del estanquero
+// función que ejecuta la hebra del suministradora
 
-void funcion_hebra_estanquero( MRef<Estanco> monitor )
+void funcion_hebra_suministradora( MRef<Buffer> monitor )
 {
    while (true)
    {
       unsigned i = producir_ingrediente();
-      monitor->ponerIngrediente(i);
-      monitor->esperarRecogidaIncrediente();
+      monitor->escribir(i);
+   }
+}
+
+//----------------------------------------------------------------------
+// función que ejecuta la hebra del estanquero
+
+void funcion_hebra_estanquero( MRef<Estanco> monitor1, MRef<Buffer> monitor2 )
+{
+   while (true)
+   {
+      unsigned ingr = monitor2->leer();
+      monitor1->ponerIngrediente(ingr);
+      monitor1->esperarRecogidaIncrediente();
    }
 }
 
@@ -159,17 +253,19 @@ void fumar( int num_fumador )
    chrono::milliseconds duracion_fumar( aleatorio<20,200>() );
 
    // informa de que comienza a fumar
-
+    sem_wait(exclusion_mutua);
     cout << "Fumador " << num_fumador << "  :"
           << " empieza a fumar (" << duracion_fumar.count() << " milisegundos)" << endl;
+    sem_signal(exclusion_mutua);
 
    // espera bloqueada un tiempo igual a ''duracion_fumar' milisegundos
    this_thread::sleep_for( duracion_fumar );
 
    // informa de que ha terminado de fumar
-
+    sem_wait(exclusion_mutua);
     cout << "Fumador " << num_fumador << "  : termina de fumar, comienza espera de ingrediente." << endl;
-
+    sem_signal(exclusion_mutua);
+    
 }
 
 //----------------------------------------------------------------------
@@ -195,17 +291,19 @@ int main()
    cout << "____________________________________________________________________" << endl << flush;
    
    // crear monitor  ('monitor' es una referencia al mismo, de tipo MRef<...>)
-   MRef<Estanco> monitor = Create<Estanco>() ;
-   
+   MRef<Estanco> monitor1 = Create<Estanco>() ;
+   MRef<Buffer> monitor2 = Create<Buffer>() ;
    // declarar hebras y ponerlas en marcha
    
    thread hebras_fumadoras[num_fumadores];
-   thread hebra_estanquero(funcion_hebra_estanquero, monitor);
+   thread hebra_estanquero(funcion_hebra_estanquero, monitor1,monitor2);
+   thread hebra_suministradora(funcion_hebra_suministradora, monitor2);
    
    for (int k = 0; k < num_fumadores; k++)
-   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor, k);
+   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor1, k);
    	
    hebra_estanquero.join();
+   hebra_suministradora.join();
    
    for (int k = 0; k < num_fumadores; k++)
    	hebras_fumadoras[k].join();

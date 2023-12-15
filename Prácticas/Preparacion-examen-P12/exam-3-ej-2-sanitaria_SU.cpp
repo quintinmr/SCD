@@ -1,8 +1,3 @@
-/*
-   -Nombre: Quintín
-   -Apellidos: Mesa Romero
-   -DNI: 78006011Q
-*/
 #include <iostream>
 #include <cassert>
 #include <thread>
@@ -17,7 +12,79 @@ using namespace scd ;
 // numero de fumadores 
 
 const int num_fumadores = 3 ;
-mutex mutex;
+
+unsigned cont_fumadas[num_fumadores] = {0};
+
+Semaphore exclusion_mutua(1);
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Monitor Hospital
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+class Hospital : public HoareMonitor
+{
+
+   private:
+
+      // Declaramos variables permanentes
+      int num_fumador;		                 
+
+      CondVar                                // colas condición
+         sanitaria,                          // cola donde espera la hebra sanitaria hasta que un fumador ha fumado 5 veces.
+         fumadores[num_fumadores];           // cola donde esperan los fumadores a los que la hebra sanitaria está llamando viciosos.
+
+      // Procedimientos
+      public:
+
+         Hospital();
+         void insultar();
+         void despertarSanitaria(unsigned vicioso);
+
+};
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Implementación procedimientos del monitor
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// Constructor
+//----------------------------------------------------------------------
+Hospital::Hospital()
+{
+    sanitaria = newCondVar();
+    for (int i = 0; i < num_fumadores; i++)
+        fumadores[i] = newCondVar();
+}
+
+//----------------------------------------------------------------------
+// Insultar al vicioso del fumador
+//----------------------------------------------------------------------
+void Hospital::insultar()
+{
+    sanitaria.wait();
+    cout << "FUMAR MATA: ya los sabes fumador " << num_fumador << endl;
+    fumadores[num_fumador].wait();
+}
+
+//----------------------------------------------------------------------
+// Despertar a la hebra sanitaria (intentarlo)
+//----------------------------------------------------------------------
+void Hospital::despertarSanitaria(unsigned vicioso)
+{
+    if (cont_fumadas[vicioso] == 5)
+    {
+        num_fumador = vicioso;
+        sanitaria.signal();
+        fumadores[num_fumador].signal();
+        cout << "Soy el fumador " << num_fumador << " y me han llamado vicioso." << endl;
+        cont_fumadas[num_fumador] = 0;
+    }
+}
+
 
 //-------------------------------------------------------------------------
 // Función que simula la acción de producir un ingrediente, como un retardo
@@ -159,31 +226,46 @@ void fumar( int num_fumador )
    chrono::milliseconds duracion_fumar( aleatorio<20,200>() );
 
    // informa de que comienza a fumar
-
+    sem_wait(exclusion_mutua);
     cout << "Fumador " << num_fumador << "  :"
           << " empieza a fumar (" << duracion_fumar.count() << " milisegundos)" << endl;
+    sem_signal(exclusion_mutua);
 
    // espera bloqueada un tiempo igual a ''duracion_fumar' milisegundos
    this_thread::sleep_for( duracion_fumar );
 
    // informa de que ha terminado de fumar
-
+    sem_wait(exclusion_mutua);
     cout << "Fumador " << num_fumador << "  : termina de fumar, comienza espera de ingrediente." << endl;
+    sem_signal(exclusion_mutua);
 
+    cont_fumadas[num_fumador]++;
 }
 
 //----------------------------------------------------------------------
 // función que ejecuta la hebra del fumador
-void  funcion_hebra_fumador( MRef<Estanco> monitor, unsigned i )
+void  funcion_hebra_fumador( MRef<Estanco> monitor,MRef<Hospital> monitor1, unsigned i )
 {
    while( true )
    {
       monitor->obtenerIngrediente(i);
       fumar(i);
+      monitor1->despertarSanitaria(i);
+
 
    }
 }
 
+//----------------------------------------------------------------------
+// función que ejecuta la hebra sanitaria
+void  funcion_hebra_sanitaria( MRef<Hospital> monitor)
+{
+   while( true )
+   {
+      monitor->insultar();
+
+   }
+}
 //----------------------------------------------------------------------
 
 int main()
@@ -196,16 +278,18 @@ int main()
    
    // crear monitor  ('monitor' es una referencia al mismo, de tipo MRef<...>)
    MRef<Estanco> monitor = Create<Estanco>() ;
-   
+   MRef<Hospital> monitor1 = Create<Hospital>() ;
    // declarar hebras y ponerlas en marcha
    
    thread hebras_fumadoras[num_fumadores];
    thread hebra_estanquero(funcion_hebra_estanquero, monitor);
+   thread hebra_sanitaria(funcion_hebra_sanitaria,monitor1);
    
    for (int k = 0; k < num_fumadores; k++)
-   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor, k);
+   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor,monitor1, k);
    	
    hebra_estanquero.join();
+   hebra_sanitaria.join();
    
    for (int k = 0; k < num_fumadores; k++)
    	hebras_fumadoras[k].join();

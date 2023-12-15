@@ -1,8 +1,3 @@
-/*
-   -Nombre: Quintín
-   -Apellidos: Mesa Romero
-   -DNI: 78006011Q
-*/
 #include <iostream>
 #include <cassert>
 #include <thread>
@@ -17,7 +12,7 @@ using namespace scd ;
 // numero de fumadores 
 
 const int num_fumadores = 3 ;
-mutex mutex;
+mutex mutx;
 
 //-------------------------------------------------------------------------
 // Función que simula la acción de producir un ingrediente, como un retardo
@@ -29,7 +24,9 @@ int producir_ingrediente()
    chrono::milliseconds duracion_produ( aleatorio<10,100>() );
 
    // informa de que comienza a producir
+   mutx.lock();
    cout << "Estanquero : empieza a producir ingrediente (" << duracion_produ.count() << " milisegundos)" << endl;
+   mutx.unlock();
 
    // espera bloqueada un tiempo igual a ''duracion_produ' milisegundos
    this_thread::sleep_for( duracion_produ );
@@ -37,7 +34,9 @@ int producir_ingrediente()
    const int num_ingrediente = aleatorio<0,num_fumadores-1>() ;
 
    // informa de que ha terminado de producir
+   mutx.lock();
    cout << "Estanquero : termina de producir ingrediente " << num_ingrediente << endl;
+   mutx.unlock();
 
    return num_ingrediente ;
 }
@@ -149,6 +148,91 @@ void funcion_hebra_estanquero( MRef<Estanco> monitor )
    }
 }
 
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Monitor Buffer
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+class Buffer : public HoareMonitor
+{
+
+    private:
+
+        // Declaración de variables permanentes
+        unsigned buffer[num_fumadores],             //array de 3 elementos donde se insertarán los cigarrillos
+                 cont_inserciones,                  //contador del número de inserciones que se hacen en el buzón
+                 primera_libre,                     //variable para gestión de ocupación del buffer (casillas libres)
+                 primera_ocupada;                   //variable para gestión de ocupación del buffer (casillas ocupadas)
+
+        CondVar 
+                 cola_buzon_lleno,                  //cola en la que esperan los fumadores que se encuentran el buzón lleno
+                 cola_buzon_vacio;                  //cola en la que espera el contrabandista al encontrarse el buzón vacío
+
+    public:
+
+        // Declaración de procedimientos del monitor
+        Buffer();                                   // constructor
+        unsigned extraer();                         // extraer sobre del buzón
+        void insertar(unsigned num_fumador);                            // insertar sobre en el buzón
+
+};      
+
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+// Implementación procedimientos del monitor
+//----------------------------------------------------------------------
+//----------------------------------------------------------------------
+
+//----------------------------------------------------------------------
+// Constructor
+//----------------------------------------------------------------------
+Buffer::Buffer()
+{
+    cont_inserciones = 0;
+    primera_libre    = 0;
+    primera_ocupada  = 0;
+    cola_buzon_lleno = newCondVar();
+    cola_buzon_vacio = newCondVar();
+}
+
+//----------------------------------------------------------------------
+// Función para la inserción de un sobre en el buffer
+//----------------------------------------------------------------------
+void Buffer::insertar(unsigned num_fumador)
+{
+    if (cont_inserciones == 3)   // si el buzón está lleno
+        cola_buzon_lleno.wait(); // fumador espera a que se vacíe un poco el buzón
+
+    // inserción del sobre y contabilización de inserciones
+    buffer[primera_libre] = num_fumador;
+    primera_libre = (primera_libre+1) % num_fumadores;
+    cont_inserciones++;
+    
+    // se despierta al contrabandista por si estaba esperando a que hubiera sobres
+    cola_buzon_vacio.signal();
+
+}
+
+//----------------------------------------------------------------------
+// Función para la extracción de un sobre del buffer
+//----------------------------------------------------------------------
+unsigned Buffer::extraer()
+{
+    if (cont_inserciones == 0)   // si el buzón está lleno
+        cola_buzon_vacio.wait(); // esperar a que se llene un poco el buzón
+
+    // extracción del sobre y reducción de inserciones
+    unsigned sobre = buffer[primera_ocupada];
+    primera_ocupada = (primera_ocupada+1) % num_fumadores;
+    cont_inserciones--;
+    
+    // se despierta al fumador por si estaba esperando a que se vaciara un poco el buzón
+    cola_buzon_lleno.signal();
+
+    return sobre;
+
+}
 //-------------------------------------------------------------------------
 // Función que simula la acción de fumar, como un retardo aleatoria de la hebra
 
@@ -159,27 +243,73 @@ void fumar( int num_fumador )
    chrono::milliseconds duracion_fumar( aleatorio<20,200>() );
 
    // informa de que comienza a fumar
-
+    mutx.lock();
     cout << "Fumador " << num_fumador << "  :"
           << " empieza a fumar (" << duracion_fumar.count() << " milisegundos)" << endl;
+    mutx.unlock();
 
    // espera bloqueada un tiempo igual a ''duracion_fumar' milisegundos
    this_thread::sleep_for( duracion_fumar );
 
    // informa de que ha terminado de fumar
-
+    mutx.lock();
     cout << "Fumador " << num_fumador << "  : termina de fumar, comienza espera de ingrediente." << endl;
+    mutx.unlock();
 
 }
 
 //----------------------------------------------------------------------
 // función que ejecuta la hebra del fumador
-void  funcion_hebra_fumador( MRef<Estanco> monitor, unsigned i )
+void  funcion_hebra_fumador( MRef<Estanco> monitor1,MRef<Buffer> monitor2, unsigned i )
 {
    while( true )
    {
-      monitor->obtenerIngrediente(i);
-      fumar(i);
+      monitor1->obtenerIngrediente(i);
+      this_thread::sleep_for( chrono::milliseconds( aleatorio<20,150>() ));
+
+      monitor2->insertar(i);
+
+      mutx.lock();
+      cout << "Fumador " << i << " inserta sobre en el buzón." << endl;
+      mutx.unlock();
+
+   }
+}
+
+//----------------------------------------------------------------------
+// función que ejecuta la hebra del fumador
+void  funcion_hebra_contrabandista ( MRef<Buffer> monitor)
+{
+    unsigned cont_extracciones = 0,
+             cont_cigarrillos[num_fumadores] = {0};
+    
+   
+   while( true )
+   {
+      this_thread::sleep_for( chrono::milliseconds( aleatorio<20,150>() ));
+
+      mutx.lock();
+      cout << "Contrabandista intenta sacar sobre del buzón." << endl;
+      mutx.unlock();
+      
+      unsigned sobre = monitor->extraer();
+
+      mutx.lock();
+      cout << "Contrabandista saca un sobre del buzón. Concretamente, el del fumador " << sobre << endl;
+      cont_extracciones++;
+      cont_cigarrillos[sobre]++;
+      mutx.unlock();
+
+      if (cont_extracciones % 4 == 0)
+      {
+           for (unsigned i = 0; i < num_fumadores; i++)
+           {
+            mutx.lock();
+            cout << "*********FUMADOR " << i << " ha enviado " << cont_cigarrillos[i] << " cigarrillos*********" << endl;
+            mutx.unlock();
+           }
+      }
+      
 
    }
 }
@@ -191,21 +321,24 @@ int main()
    // declarar hebras y ponerlas en marcha
    cout << "____________________________________________________________________" << endl;
    cout << endl;
-   cout << "	  PROBLEMA DE LOS FUMADORES CON MONITORES                       " << endl;
+   cout << "			PROBLEMA DE LOS FUMADORES-CONTRABANDISTA                      " << endl;
    cout << "____________________________________________________________________" << endl << flush;
    
-   // crear monitor  ('monitor' es una referencia al mismo, de tipo MRef<...>)
-   MRef<Estanco> monitor = Create<Estanco>() ;
-   
+
+    MRef<Estanco> monitor1 = Create<Estanco>();
+    MRef<Buffer> monitor2 = Create<Buffer>();
    // declarar hebras y ponerlas en marcha
    
    thread hebras_fumadoras[num_fumadores];
-   thread hebra_estanquero(funcion_hebra_estanquero, monitor);
+   thread hebra_estanquero(funcion_hebra_estanquero,monitor1);
+   thread hebra_contrabandista(funcion_hebra_contrabandista,monitor2);
    
    for (int k = 0; k < num_fumadores; k++)
-   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor, k);
+   	hebras_fumadoras[k] = thread (funcion_hebra_fumador,monitor1,monitor2,k);
    	
    hebra_estanquero.join();
+
+   hebra_contrabandista.join();
    
    for (int k = 0; k < num_fumadores; k++)
    	hebras_fumadoras[k].join();
